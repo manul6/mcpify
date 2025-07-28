@@ -60,10 +60,10 @@ class FunctionTool(Tool):
                 "required": required
             }
         )
-        self.func = func
+        self._func = func
     
     def __call__(self, **kwargs):
-        return self.func(**kwargs)
+        return self._func(**kwargs)
     
 class ToolHolder:
     def __init__(self, name: str = "", tools: dict[str, "ToolHolder | FunctionTool"] | None = None):
@@ -92,8 +92,8 @@ class ToolHolder:
             assert not path, "no such path"
             return tool
     
-    def __call__(self, name: str, **kwargs) -> Any:
-        return self[name](**kwargs)
+    def __call__(self, tool_name: str, **kwargs) -> Any:
+        return self[tool_name](**kwargs)
         
 
 class McpifiedServer(Server):
@@ -116,26 +116,26 @@ class McpifiedServer(Server):
         """
         super().__init__(name)
         self.tools = ToolHolder()
+        
+        @self.list_tools()
+        async def handle_list_tools():
+            return [tool for tool in self.tools.tools.values() if isinstance(tool, FunctionTool)]
+        
+        @self.call_tool()
+        async def handle_call_tool(name: str, arguments: dict):
+            try:
+                tool = self.tools[name]
+                result = await tool(**arguments) if inspect.iscoroutinefunction(tool._func) else tool(**arguments)
+                result_text = json.dumps(result) if not isinstance(result, str) else result
+            except Exception as e:
+                result_text = f"error: {str(e)}"
+            
+            return [TextContent(type="text", text=result_text)]
     
     def add_function(self, func: Callable):
         tool = mcpify_function(func)
         self.tools += tool
         return tool
-    
-    async def _handle_call_tool(self, request):
-        tool_name = request.params.name
-        arguments = request.params.arguments
-
-        try:
-            tool = self.tools[tool_name]
-            result = await tool(**arguments) if inspect.iscoroutinefunction(tool) else tool(**arguments)
-            result_text = json.dumps(result) if not isinstance(result, str) else result
-        except Exception as e:
-            result_text = f"error: {str(e)}"
-        
-        return CallToolResult(
-            content=[TextContent(type="text", text=result_text)]
-        )
 
 def mcpify(func_or_list: Callable | list[Callable]) -> McpifiedServer:
     server = McpifiedServer()
