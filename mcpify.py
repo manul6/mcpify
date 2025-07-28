@@ -25,7 +25,7 @@ def mcpify_type(annotation: Any) -> dict:
     
     return {"type": "string"}
 
-def mcpify_function(func: Callable) -> Tool:
+def mcpify_function(func: Callable) -> "FunctionTool":
     """convert function to mcp tool
     
     >>> def multiply(x: int, y: int) -> int:
@@ -34,28 +34,67 @@ def mcpify_function(func: Callable) -> Tool:
     >>> tool # doctest: +ELLIPSIS +NORMALIZE_WHITESPACE
     Tool(name='multiply', ..., inputSchema={'type': 'object', 'properties': {'x': {'type': 'integer'}, 'y': {'type': 'integer'}}, 'required': ['x', 'y']}...)
     """
-    sig = inspect.signature(func)
-    properties = {}
-    required = []
+    return FunctionTool(func)
+
+class FunctionTool(Tool):
+    def __init__(self, func: Callable):
+        sig = inspect.signature(func)
+        properties = {}
+        required = []
+        
+        for param_name, param in sig.parameters.items():
+            if param.annotation != inspect.Parameter.empty:
+                properties[param_name] = mcpify_type(param.annotation)
+            else:
+                properties[param_name] = {"type": "string"}
+                
+            if param.default == inspect.Parameter.empty:
+                required.append(param_name)
+                
+        super().__init__(
+            name=func.__name__,
+            description=func.__doc__,
+            inputSchema={
+                "type": "object",
+                "properties": properties,
+                "required": required
+            }
+        )
+        self.func = func
     
-    for param_name, param in sig.parameters.items():
-        if param.annotation != inspect.Parameter.empty:
-            properties[param_name] = mcpify_type(param.annotation)
+    def __call__(self, **kwargs):
+        return self.func(**kwargs)
+    
+class ToolHolder:
+    def __init__(self, name: str = "", tools: dict[str, "ToolHolder | FunctionTool"] | None = None):
+        self.name = name
+        self.tools : dict[str, "ToolHolder | FunctionTool"] = tools or {}
+    
+    def __iadd__(self, other: "FunctionTool | ToolHolder"):
+        assert other.name, "tool name is required"
+        self.tools[other.name] = other
+        return self
+    
+    def __ior__(self, other: "ToolHolder"):
+        assert isinstance(other, ToolHolder), "a tool"
+        assert self.name == other.name, "should be the same name"
+        assert not set(self.tools.keys()) & set(other.tools.keys()), "overlapping tool names found"
+        
+        self.tools.update(other.tools)
+        return self
+    
+    def __getitem__(self, name: str) -> "ToolHolder | FunctionTool":
+        next, path = name.split(".", 1) if "." in name else (name, "")
+        tool = self.tools[next]
+        if isinstance(tool, ToolHolder):
+            return tool[path]
         else:
-            properties[param_name] = {"type": "string"}
-            
-        if param.default == inspect.Parameter.empty:
-            required.append(param_name)
+            assert not path, "no such path"
+            return tool
     
-    return Tool(
-        name=func.__name__,
-        description=func.__doc__,
-        inputSchema={
-            "type": "object",
-            "properties": properties,
-            "required": required
-        }
-    )
+    def __call__(self, name: str, **kwargs) -> Any:
+        return self[name](**kwargs)
+        
 
 class McpifiedServer(Server):
     def __init__(self, name: str = ""):
@@ -76,34 +115,27 @@ class McpifiedServer(Server):
         CallToolResult(..., content=[TextContent(type='text', text='3', ...)], ..., isError=False)
         """
         super().__init__(name)
-        self.functions = {}
+        self.tools = ToolHolder()
     
     def add_function(self, func: Callable):
         tool = mcpify_function(func)
-        self.functions[func.__name__] = func
+        self.tools += tool
         return tool
     
     async def _handle_call_tool(self, request):
         tool_name = request.params.name
         arguments = request.params.arguments
-        
-        if tool_name not in self.functions:
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"tool '{tool_name}' not found")]
-            )
-        
+
         try:
-            func = self.functions[tool_name]
-            result = await func(**arguments) if inspect.iscoroutinefunction(func) else func(**arguments)
+            tool = self.tools[tool_name]
+            result = await tool(**arguments) if inspect.iscoroutinefunction(tool) else tool(**arguments)
             result_text = json.dumps(result) if not isinstance(result, str) else result
-            
-            return CallToolResult(
-                content=[TextContent(type="text", text=result_text)]
-            )
         except Exception as e:
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"error: {str(e)}")]
-            )
+            result_text = f"error: {str(e)}"
+        
+        return CallToolResult(
+            content=[TextContent(type="text", text=result_text)]
+        )
 
 def mcpify(func_or_list: Callable | list[Callable]) -> McpifiedServer:
     server = McpifiedServer()
