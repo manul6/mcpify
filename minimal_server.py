@@ -5,7 +5,6 @@ from mcp.server.models import InitializationOptions
 from mcp.server import NotificationOptions
 from mcpify import mcpify
 
-# your functions
 def add(a: int, b: int) -> int:
     """add two numbers"""
     return a + b
@@ -18,7 +17,7 @@ def multiply(x: int, y: int) -> int:
     """multiply two numbers"""
     return x * y
 
-server = mcpify([add, greet, multiply])
+server = mcpify([add, greet, multiply, getattr])
 
 async def main():
     async with stdio_server() as (read_stream, write_stream):

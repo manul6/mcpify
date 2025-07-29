@@ -1,1 +1,4 @@
 mcp
+watchdog
+coverage[toml]
+pytest-cov
