@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
 from typing import List, Dict, Optional, Union
-from mcp.server.stdio import stdio_server
-from mcp.server.models import InitializationOptions
-from mcp.server import NotificationOptions
 from mcpify import mcpify
 
 def add(a: int, b: int) -> int:
@@ -66,7 +63,7 @@ class Person:
 
 calc = Calculator(10)
 
-server = mcpify([
+server = mcpify(
     add,
     greet, 
     multiply,
@@ -80,23 +77,12 @@ server = mcpify([
     Person,
     calc.add_to_value,
     getattr,
-    setattr
-])
+    setattr,
+    server_name="mcpify-comprehensive"
+)
 
 async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="mcpify-comprehensive",
-                server_version="1.0.0",
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(),
-                    experimental_capabilities={},
-                ),
-            )
-        )
+    await server.run()
 
 if __name__ == "__main__":
     asyncio.run(main()) 

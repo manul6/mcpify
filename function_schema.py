@@ -13,6 +13,7 @@ class Parameter:
     is_required: bool
     default_value: Optional[Any] = None
     description: Optional[str] = None
+    is_positional: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,4 +52,8 @@ class FunctionSchema:
     
     @property
     def optional_parameters(self) -> List[Parameter]:
-        return [p for p in self.parameters if not p.is_required] 
+        return [p for p in self.parameters if not p.is_required]
+    
+    @property
+    def positional_parameters(self) -> List[Parameter]:
+        return [p for p in self.parameters if p.is_positional] 

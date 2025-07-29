@@ -1,6 +1,27 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, Dict, Type
+import json
+
+
+class TypeRegistry:
+    """global registry for storing and retrieving types by name"""
+    _registry: Dict[str, Type] = {}
+    
+    @classmethod
+    def register(cls, type_name: str, python_type: Type):
+        """register a type by name"""
+        cls._registry[type_name] = python_type
+    
+    @classmethod
+    def get(cls, type_name: str) -> Optional[Type]:
+        """get a type by name"""
+        return cls._registry.get(type_name)
+    
+    @classmethod
+    def clear(cls):
+        """clear the registry (useful for testing)"""
+        cls._registry.clear()
 
 
 @dataclass(frozen=True)
@@ -17,6 +38,33 @@ class MCPType(ABC):
 @dataclass(frozen=True)
 class MCPPrimitive(MCPType):
     pass
+
+
+@dataclass(frozen=True)
+class MCPAny(MCPType):
+    def serialize_value(self, value: Any) -> str:
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return json.dumps(value)
+        else:
+            return json.dumps(value, default=str)
+    
+    def deserialize_value(self, data: str) -> Any:
+        try:
+            parsed = json.loads(data)
+            if isinstance(parsed, dict) and "__mcp_type__" in parsed:
+                type_name = parsed["__mcp_type__"]
+                python_type = TypeRegistry.get(type_name)
+                if python_type:
+                    obj = python_type.__new__(python_type)
+                    for key, value in parsed.items():
+                        if key != "__mcp_type__":
+                            setattr(obj, key, value)
+                    return obj
+                else:
+                    return parsed
+            return parsed
+        except (json.JSONDecodeError, TypeError):
+            return data
 
 
 @dataclass(frozen=True)
@@ -59,15 +107,19 @@ class MCPBool(MCPPrimitive):
 class MCPArray(MCPType):
     items: MCPType
     
-    def serialize_value(self, value: Any) -> list:
+    def serialize_value(self, value: Any) -> str:
         if not isinstance(value, (list, tuple)):
             value = [value]
-        return [self.items.serialize_value(item) for item in value]
+        return json.dumps(value, default=str)
     
-    def deserialize_value(self, data: Any) -> list:
-        if not isinstance(data, list):
-            data = [data]
-        return [self.items.deserialize_value(item) for item in data]
+    def deserialize_value(self, data: str) -> list:
+        try:
+            parsed = json.loads(data)
+            if not isinstance(parsed, list):
+                return [parsed]
+            return parsed
+        except (json.JSONDecodeError, TypeError):
+            return [data]
 
 
 @dataclass(frozen=True)
@@ -77,39 +129,40 @@ class MCPObject(MCPType):
     type_name: Optional[str] = None
     description: Optional[str] = None
     
-    def serialize_value(self, value: Any) -> dict:
-        result = {}
-        
-        if self.type_name:
-            result["__mcp_type__"] = self.type_name
-        
+    def serialize_value(self, value: Any) -> str:
         if hasattr(value, '__dict__'):
-            obj_dict = value.__dict__
+            obj_dict = value.__dict__.copy()
+            if self.type_name:
+                obj_dict["__mcp_type__"] = self.type_name
+            return json.dumps(obj_dict, default=str)
         elif isinstance(value, dict):
-            obj_dict = value
+            obj_dict = value.copy()
+            if self.type_name:
+                obj_dict["__mcp_type__"] = self.type_name
+            return json.dumps(obj_dict, default=str)
         else:
-            obj_dict = {"value": value}
-        
-        for prop_name, prop_type in self.properties.items():
-            if prop_name in obj_dict:
-                result[prop_name] = prop_type.serialize_value(obj_dict[prop_name])
-        
-        return result
+            return json.dumps({"value": value, "__mcp_type__": self.type_name or "object"}, default=str)
     
-    def deserialize_value(self, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-        
-        if self.type_name and "__mcp_type__" in data:
-            if data["__mcp_type__"] != self.type_name:
-                raise ValueError(f"type mismatch: expected {self.type_name}, got {data['__mcp_type__']}")
-        
-        result = {}
-        for prop_name, prop_type in self.properties.items():
-            if prop_name in data:
-                result[prop_name] = prop_type.deserialize_value(data[prop_name])
-        
-        return result
+    def deserialize_value(self, data: str) -> Any:
+        try:
+            parsed = json.loads(data)
+            if isinstance(parsed, dict) and "__mcp_type__" in parsed:
+                type_name = parsed["__mcp_type__"]
+                python_type = TypeRegistry.get(type_name)
+                if python_type:
+                    obj = python_type.__new__(python_type)
+                    for key, value in parsed.items():
+                        if key != "__mcp_type__":
+                            setattr(obj, key, value)
+                    return obj
+                else:
+                    return parsed
+            elif isinstance(parsed, dict):
+                return parsed
+            else:
+                return {"value": parsed}
+        except (json.JSONDecodeError, TypeError):
+            return {"value": data}
 
 
 @dataclass(frozen=True)
@@ -120,29 +173,14 @@ class MCPUnion(MCPType):
         if len(self.variants) < 2:
             raise ValueError("union must have at least 2 variants")
     
-    def serialize_value(self, value: Any) -> Any:
-        for variant in self.variants:
-            try:
-                return variant.serialize_value(value)
-            except (ValueError, TypeError, AttributeError):
-                continue
-        
-        return str(value)
+    def serialize_value(self, value: Any) -> str:
+        return json.dumps(value, default=str)
     
-    def deserialize_value(self, data: Any) -> Any:
-        if isinstance(data, dict) and "__mcp_type__" in data:
-            type_name = data["__mcp_type__"]
-            for variant in self.variants:
-                if isinstance(variant, MCPObject) and variant.type_name == type_name:
-                    return variant.deserialize_value(data)
-        
-        for variant in self.variants:
-            try:
-                return variant.deserialize_value(data)
-            except (ValueError, TypeError, AttributeError):
-                continue
-        
-        return data
+    def deserialize_value(self, data: str) -> Any:
+        try:
+            return json.loads(data)
+        except (json.JSONDecodeError, TypeError):
+            return data
 
 
 @dataclass(frozen=True)
@@ -152,14 +190,19 @@ class MCPOptional(MCPType):
     def serialize_value(self, value: Any) -> Any:
         if value is None:
             return None
+        if isinstance(self.inner_type, (MCPAny, MCPArray, MCPObject, MCPUnion)):
+            return self.inner_type.serialize_value(value)
         return self.inner_type.serialize_value(value)
     
     def deserialize_value(self, data: Any) -> Any:
         if data is None:
             return None
+        if isinstance(self.inner_type, (MCPAny, MCPArray, MCPObject, MCPUnion)):
+            return self.inner_type.deserialize_value(data)
         return self.inner_type.deserialize_value(data)
 
 
+MCP_ANY = MCPAny()
 MCP_INT = MCPInt()
 MCP_FLOAT = MCPFloat()
 MCP_STRING = MCPString()

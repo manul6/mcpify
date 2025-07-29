@@ -2,7 +2,7 @@ import inspect
 from abc import ABC, abstractmethod
 from typing import Callable, List, Optional, get_origin, get_args, Union
 
-from mcp_types import MCPType, MCPInt, MCPFloat, MCPString, MCPBool, MCPArray, MCPObject, MCPUnion, MCP_INT, MCP_FLOAT, MCP_STRING, MCP_BOOL
+from mcp_types import MCPType, MCPInt, MCPFloat, MCPString, MCPBool, MCPArray, MCPObject, MCPUnion, MCPAny, MCP_INT, MCP_FLOAT, MCP_STRING, MCP_BOOL, MCP_ANY
 from function_schema import Parameter, FunctionSchema
 
 
@@ -36,7 +36,7 @@ class TypeConverter:
         if inspect.isclass(annotation):
             return self._convert_class(annotation)
         
-        return MCP_STRING
+        return MCP_ANY
     
     def convert_from_value(self, value) -> MCPType:
         """convert a runtime value to its corresponding mcptype - used by value serializer"""
@@ -61,7 +61,7 @@ class TypeConverter:
         elif hasattr(value, '__dict__'):
             return self._convert_object_from_value(value)
         else:
-            return MCP_STRING
+            return MCP_ANY
     
     def _convert_object_from_value(self, obj) -> MCPObject:
         """convert a runtime object to mcpobject"""
@@ -92,7 +92,7 @@ class TypeConverter:
                 if param.annotation != inspect.Parameter.empty:
                     properties[param_name] = self.convert(param.annotation)
                 else:
-                    properties[param_name] = MCP_STRING
+                    properties[param_name] = MCP_ANY
                 
                 if param.default == inspect.Parameter.empty:
                     required.append(param_name)
@@ -129,7 +129,7 @@ class ParameterExtractor(ABC):
             if param_name == 'self':
                 continue
             
-            param_type = type_converter.convert(param.annotation) if param.annotation != inspect.Parameter.empty else MCP_STRING
+            param_type = type_converter.convert(param.annotation) if param.annotation != inspect.Parameter.empty else MCP_ANY
             is_required = param.default == inspect.Parameter.empty
             default_value = param.default if param.default != inspect.Parameter.empty else None
             
@@ -189,14 +189,14 @@ class BoundMethodExtractor(ParameterExtractor):
 class BuiltinExtractor(ParameterExtractor):
     BUILTIN_SCHEMAS = {
         'getattr': [
-            Parameter('obj', MCP_STRING, True, description='object to get attribute from'),
-            Parameter('name', MCP_STRING, True, description='attribute name'),
-            Parameter('default', MCP_STRING, False, description='default value if attribute not found')
+            Parameter('obj', MCP_ANY, True, description='object to get attribute from', is_positional=True),
+            Parameter('name', MCP_STRING, True, description='attribute name', is_positional=True),
+            Parameter('default', MCP_ANY, False, description='default value if attribute not found', is_positional=True)
         ],
         'setattr': [
-            Parameter('obj', MCP_STRING, True, description='object to set attribute on'),
-            Parameter('name', MCP_STRING, True, description='attribute name'),
-            Parameter('value', MCP_STRING, True, description='value to set')
+            Parameter('obj', MCP_ANY, True, description='object to set attribute on', is_positional=True),
+            Parameter('name', MCP_STRING, True, description='attribute name', is_positional=True),
+            Parameter('value', MCP_ANY, True, description='value to set', is_positional=True)
         ]
     }
     
@@ -213,10 +213,10 @@ class CallableInspector:
     def __init__(self):
         self.type_converter = TypeConverter()
         self.extractors = [
+            BuiltinExtractor(),
             SignatureExtractor(),
             ClassExtractor(),
-            BoundMethodExtractor(),
-            BuiltinExtractor()
+            BoundMethodExtractor()
         ]
     
     def inspect_callable(self, func: Callable) -> FunctionSchema:

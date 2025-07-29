@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Dict
 
 from mcp_types import (
-    MCPType, MCPInt, MCPFloat, MCPString, MCPBool, 
+    MCPType, MCPInt, MCPFloat, MCPString, MCPBool, MCPAny,
     MCPArray, MCPObject, MCPUnion, MCPOptional
 )
 
@@ -27,6 +27,12 @@ class JSONSchemaBuilder(SchemaBuilder):
         else:
             raise ValueError(f"unsupported mcp type: {type(mcp_type)}")
     
+    def _build_mcpany(self, mcp_type: MCPAny) -> Dict[str, Any]:
+        return {
+            "type": "string",
+            "description": "json-serialized value of any type"
+        }
+    
     def _build_mcpint(self, mcp_type: MCPInt) -> Dict[str, Any]:
         return {"type": "integer"}
     
@@ -41,37 +47,42 @@ class JSONSchemaBuilder(SchemaBuilder):
     
     def _build_mcparray(self, mcp_type: MCPArray) -> Dict[str, Any]:
         return {
-            "type": "array",
-            "items": self.build(mcp_type.items)
+            "type": "string",
+            "description": f"json-serialized array with items of type: {type(mcp_type.items).__name__}"
         }
     
     def _build_mcpobject(self, mcp_type: MCPObject) -> Dict[str, Any]:
         schema = {
-            "type": "object",
-            "properties": {
-                name: self.build(prop_type) 
-                for name, prop_type in mcp_type.properties.items()
-            },
-            "required": mcp_type.required
+            "type": "string",
+            "description": f"json-serialized object"
         }
         
         if mcp_type.type_name:
-            schema["x-mcp-type"] = mcp_type.type_name
+            schema["description"] += f" of type {mcp_type.type_name}"
+        
+        if mcp_type.properties:
+            prop_desc = ", ".join(f"{name}: {type(prop_type).__name__}" for name, prop_type in mcp_type.properties.items())
+            schema["description"] += f" with properties: {prop_desc}"
         
         if mcp_type.description:
-            schema["description"] = mcp_type.description
+            schema["description"] += f" - {mcp_type.description}"
             
         return schema
     
     def _build_mcpunion(self, mcp_type: MCPUnion) -> Dict[str, Any]:
+        variant_types = [type(variant).__name__ for variant in mcp_type.variants]
         return {
-            "anyOf": [self.build(variant) for variant in mcp_type.variants]
+            "type": "string",
+            "description": f"json-serialized value that can be one of: {', '.join(variant_types)}"
         }
     
     def _build_mcpoptional(self, mcp_type: MCPOptional) -> Dict[str, Any]:
+        inner_schema = self.build(mcp_type.inner_type)
+        if "description" in inner_schema:
+            inner_schema["description"] += " (optional, can be null)"
         return {
             "anyOf": [
-                self.build(mcp_type.inner_type),
+                inner_schema,
                 {"type": "null"}
             ]
         }
