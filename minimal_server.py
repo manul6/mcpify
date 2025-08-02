@@ -63,6 +63,11 @@ class Calculator:
         """add amount to stored value"""
         self.value += amount
         return self.value
+    
+    @staticmethod
+    def add_static(a: int, b: int) -> int:
+        """add two numbers statically"""
+        return a + b
 
 class Person:
     """person with name and age"""
@@ -80,6 +85,7 @@ server = mcpify(
 
     Calculator,
     Calculator.add_to_value,
+    Calculator.add_static,
     getattr,
     setattr,
     server_name="mcpify-calc"
