@@ -84,8 +84,7 @@ calc = Calculator(10)
 server = mcpify(
 
     Calculator,
-    Calculator.add_to_value,
-    Calculator.add_static,
+    Person,
     getattr,
     setattr,
     server_name="mcpify-calc"

@@ -171,8 +171,43 @@ class McpifiedServer:
     def add_function(self, func: Any, name: str = None) -> 'McpifiedServer':
         function_name = name or getattr(func, '__name__', str(func))
         schema = self.callable_inspector.inspect_callable(func)
+        # create a new schema with the correct name
+        from function_schema import FunctionSchema
+        schema = FunctionSchema(
+            name=function_name,
+            description=schema.description,
+            parameters=schema.parameters,
+            return_type=schema.return_type
+        )
         self.tool_holder.add_tool(function_name, func, schema)
         return self
+    
+    def _add_class_methods(self, cls: type) -> None:
+        """recursively add all methods from a class"""
+        for attr_name in dir(cls):
+            attr = getattr(cls, attr_name)
+            
+            # skip private methods and special methods
+            if attr_name.startswith('_'):
+                continue
+            
+            # skip if it's not a method or if it's a bound method
+            if not inspect.isfunction(attr):
+                continue
+            
+            # skip if it's already been added (avoid duplicates)
+            if attr_name in self.tool_holder.tools:
+                continue
+            
+            # add the method with class prefix to avoid naming conflicts
+            method_name = f"{cls.__name__}-{attr_name}"
+            
+            try:
+                # use add_function to get the name fix
+                self.add_function(attr, name=method_name)
+            except Exception as e:
+                # skip methods that can't be inspected
+                continue
     
     async def run(self):
         async with stdio_server() as (read_stream, write_stream):
@@ -190,8 +225,17 @@ class McpifiedServer:
             )
 
 
-def mcpify(*callables, server_name: str = "mcpify") -> McpifiedServer:
+def mcpify(*callables, server_name: str = "mcpify", recurse: bool = True) -> McpifiedServer:
     server = McpifiedServer(server_name)
+    
+    # first pass: add all callables
     for callable_obj in callables:
         server.add_function(callable_obj)
+    
+    # second pass: if recurse is enabled, add methods from classes
+    if recurse:
+        for callable_obj in callables:
+            if inspect.isclass(callable_obj):
+                server._add_class_methods(callable_obj)
+    
     return server
