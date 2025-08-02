@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Optional, Union, Dict, Type
 import json
+import pointer_registry
 
 
 class TypeRegistry:
@@ -48,23 +49,38 @@ class MCPAny(MCPType):
         else:
             return json.dumps(value, default=str)
     
-    def deserialize_value(self, data: str) -> Any:
-        try:
-            parsed = json.loads(data)
-            if isinstance(parsed, dict) and "__mcp_type__" in parsed:
-                type_name = parsed["__mcp_type__"]
-                python_type = TypeRegistry.get(type_name)
-                if python_type:
-                    obj = python_type.__new__(python_type)
-                    for key, value in parsed.items():
-                        if key != "__mcp_type__":
-                            setattr(obj, key, value)
+    def deserialize_value(self, data) -> Any:
+        if isinstance(data, dict):
+            parsed = data
+        else:
+            try:
+                parsed = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                return data
+        
+        if isinstance(parsed, dict) and "__mcp_ptr__" in parsed:
+            obj_id = parsed.get("id")
+            if obj_id:
+                obj = pointer_registry.get(obj_id)
+                if obj is not None:
                     return obj
                 else:
-                    return parsed
-            return parsed
-        except (json.JSONDecodeError, TypeError):
-            return data
+                    raise ValueError(f"unknown object pointer: {obj_id}")
+            else:
+                raise ValueError("pointer envelope missing id")
+        
+        if isinstance(parsed, dict) and "__mcp_type__" in parsed:
+            type_name = parsed["__mcp_type__"]
+            python_type = TypeRegistry.get(type_name)
+            if python_type:
+                obj = python_type.__new__(python_type)
+                for key, value in parsed.items():
+                    if key != "__mcp_type__":
+                        setattr(obj, key, value)
+                return obj
+            else:
+                return parsed
+        return parsed
 
 
 @dataclass(frozen=True)
@@ -143,26 +159,41 @@ class MCPObject(MCPType):
         else:
             return json.dumps({"value": value, "__mcp_type__": self.type_name or "object"}, default=str)
     
-    def deserialize_value(self, data: str) -> Any:
-        try:
-            parsed = json.loads(data)
-            if isinstance(parsed, dict) and "__mcp_type__" in parsed:
-                type_name = parsed["__mcp_type__"]
-                python_type = TypeRegistry.get(type_name)
-                if python_type:
-                    obj = python_type.__new__(python_type)
-                    for key, value in parsed.items():
-                        if key != "__mcp_type__":
-                            setattr(obj, key, value)
+    def deserialize_value(self, data) -> Any:
+        if isinstance(data, dict):
+            parsed = data
+        else:
+            try:
+                parsed = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                return {"value": data}
+        
+        if isinstance(parsed, dict) and "__mcp_ptr__" in parsed:
+            obj_id = parsed.get("id")
+            if obj_id:
+                obj = pointer_registry.get(obj_id)
+                if obj is not None:
                     return obj
                 else:
-                    return parsed
-            elif isinstance(parsed, dict):
-                return parsed
+                    raise ValueError(f"unknown object pointer: {obj_id}")
             else:
-                return {"value": parsed}
-        except (json.JSONDecodeError, TypeError):
-            return {"value": data}
+                raise ValueError("pointer envelope missing id")
+        
+        if isinstance(parsed, dict) and "__mcp_type__" in parsed:
+            type_name = parsed["__mcp_type__"]
+            python_type = TypeRegistry.get(type_name)
+            if python_type:
+                obj = python_type.__new__(python_type)
+                for key, value in parsed.items():
+                    if key != "__mcp_type__":
+                        setattr(obj, key, value)
+                return obj
+            else:
+                return parsed
+        elif isinstance(parsed, dict):
+            return parsed
+        else:
+            return {"value": parsed}
 
 
 @dataclass(frozen=True)

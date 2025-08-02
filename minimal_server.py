@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import asyncio
-from typing import List, Dict, Optional, Union
+from typing import List, Dict, Optional, Union, Set
 from mcpify import mcpify
+import pointer_registry
 
 def add(a: int, b: int) -> int:
     """add two numbers"""
@@ -41,6 +42,18 @@ def bool_logic(flag: bool) -> str:
     """process boolean value"""
     return "enabled" if flag else "disabled"
 
+def release_pointer(id: str) -> bool:
+    """manually release an object pointer from registry"""
+    return pointer_registry.unregister(id)
+
+def list_pointers() -> Set[str]:
+    """list all active object pointer ids"""
+    return pointer_registry.list_ids()
+
+def pointer_count() -> int:
+    """get count of active object pointers"""
+    return pointer_registry.size()
+
 class Calculator:
     """simple calculator class"""
     def __init__(self, initial: int = 0):
@@ -73,6 +86,9 @@ server = mcpify(
     union_type,
     float_calc,
     bool_logic,
+    release_pointer,
+    list_pointers,
+    pointer_count,
     Calculator,
     Person,
     calc.add_to_value,
