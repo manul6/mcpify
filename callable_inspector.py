@@ -121,12 +121,12 @@ class ParameterExtractor(ABC):
     def extract_parameters(self, func: Callable, type_converter: TypeConverter) -> List[Parameter]:
         pass
     
-    def _extract_from_signature(self, sig: inspect.Signature, type_converter: TypeConverter) -> List[Parameter]:
+    def _extract_from_signature(self, sig: inspect.Signature, type_converter: TypeConverter, skip_self: bool = True) -> List[Parameter]:
         """common parameter extraction logic used by multiple extractors"""
         parameters = []
         
         for param_name, param in sig.parameters.items():
-            if param_name == 'self':
+            if param_name == 'self' and skip_self:
                 continue
             
             param_type = type_converter.convert(param.annotation) if param.annotation != inspect.Parameter.empty else MCP_ANY
@@ -171,6 +171,53 @@ class ClassExtractor(ParameterExtractor):
         return self._extract_from_signature(sig, type_converter)
 
 
+class UnboundMethodExtractor(ParameterExtractor):
+    def can_handle(self, func: Callable) -> bool:
+        # check if it's an unbound method (function defined in a class but not bound to an instance)
+        if not hasattr(func, '__qualname__'):
+            return False
+        
+        # unbound methods have qualname like "ClassName.method_name"
+        qualname_parts = func.__qualname__.split('.')
+        if len(qualname_parts) < 2:
+            return False
+        
+        # must not be a bound method (no __self__ attribute)
+        if hasattr(func, '__self__'):
+            return False
+            
+        try:
+            sig = inspect.signature(func)
+            # check if first parameter is named 'self'
+            params = list(sig.parameters.keys())
+            return len(params) > 0 and params[0] == 'self'
+        except (ValueError, TypeError):
+            return False
+    
+    def extract_parameters(self, func: Callable, type_converter: TypeConverter) -> List[Parameter]:
+        sig = inspect.signature(func)
+        # for unbound methods, don't skip self - it should be exposed as a parameter
+        parameters = self._extract_from_signature(sig, type_converter, skip_self=False)
+        
+        # mark the self parameter as positional and add usage documentation
+        for i, param in enumerate(parameters):
+            if param.name == 'self':
+                # add specific documentation for the self parameter
+                self_description = f"instance of {func.__qualname__.split('.')[0]} class (must be passed in dict format)"
+                
+                parameters[i] = Parameter(
+                    name=param.name,
+                    type=param.type,
+                    is_required=param.is_required,
+                    default_value=param.default_value,
+                    description=self_description,
+                    is_positional=True
+                )
+                break
+        
+        return parameters
+
+
 class BoundMethodExtractor(ParameterExtractor):
     def can_handle(self, func: Callable) -> bool:
         if not (hasattr(func, '__self__') and hasattr(func, '__func__')):
@@ -183,7 +230,7 @@ class BoundMethodExtractor(ParameterExtractor):
     
     def extract_parameters(self, func: Callable, type_converter: TypeConverter) -> List[Parameter]:
         sig = inspect.signature(func.__func__)
-        return self._extract_from_signature(sig, type_converter)
+        return self._extract_from_signature(sig, type_converter, skip_self=True)
 
 
 class BuiltinExtractor(ParameterExtractor):
@@ -214,9 +261,10 @@ class CallableInspector:
         self.type_converter = TypeConverter()
         self.extractors = [
             BuiltinExtractor(),
-            SignatureExtractor(),
+            UnboundMethodExtractor(),
+            BoundMethodExtractor(),
             ClassExtractor(),
-            BoundMethodExtractor()
+            SignatureExtractor()
         ]
     
     def inspect_callable(self, func: Callable) -> FunctionSchema:

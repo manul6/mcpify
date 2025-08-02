@@ -29,24 +29,41 @@ class FunctionTool:
     def __init__(self, func: Any, schema: FunctionSchema):
         self._func = func
         self._schema = schema
+        # check if this function has problematic parameter names that conflict with method parameters
+        self._has_self = any(param.name == 'self' for param in self._schema.parameters)
     
-    async def __call__(self, **kwargs) -> Any:
+    async def __call__(self, *args, **kwargs) -> Any:
+        # handle arguments - either single dict or keyword arguments
+        if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
+            # called with single dict argument: tool({'self': obj, 'param': value})
+            function_args = args[0]
+        elif len(args) == 0 and kwargs:
+            # called with keyword arguments: tool(param=value)
+            if self._has_self:
+                raise TypeError("function has 'self' parameter - must pass arguments as dict to avoid naming conflicts")
+            function_args = kwargs
+        elif len(args) == 0 and not kwargs:
+            # called with no arguments
+            function_args = {}
+        else:
+            raise TypeError("pass either a single dict argument or keyword arguments, not both")
+        
         if self._schema.positional_parameters:
             positional_args = []
             remaining_kwargs = {}
             
             for param in self._schema.parameters:
-                if param.is_positional and param.name in kwargs:
-                    positional_args.append(kwargs[param.name])
-                elif not param.is_positional and param.name in kwargs:
-                    remaining_kwargs[param.name] = kwargs[param.name]
+                if param.is_positional and param.name in function_args:
+                    positional_args.append(function_args[param.name])
+                elif not param.is_positional and param.name in function_args:
+                    remaining_kwargs[param.name] = function_args[param.name]
             
             if remaining_kwargs:
                 return self._func(*positional_args, **remaining_kwargs)
             else:
                 return self._func(*positional_args)
         else:
-            return self._func(**kwargs)
+            return self._func(**function_args)
 
 
 class ToolHolder:
@@ -137,7 +154,7 @@ class McpifiedServer:
                         raw_value = raw_args[param.name]
                         deserialized_args[param.name] = param.type.deserialize_value(raw_value)
                 
-                result = await tool(**deserialized_args)
+                result = await tool(deserialized_args)
                 
                 serialized_result = self.value_serializer.serialize(result)
                 

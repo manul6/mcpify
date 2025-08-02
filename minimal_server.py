@@ -77,24 +77,12 @@ class Person:
 calc = Calculator(10)
 
 server = mcpify(
-    add,
-    greet, 
-    multiply,
-    process_list,
-    merge_data,
-    optional_param,
-    union_type,
-    float_calc,
-    bool_logic,
-    release_pointer,
-    list_pointers,
-    pointer_count,
+
     Calculator,
-    Person,
-    calc.add_to_value,
+    Calculator.add_to_value,
     getattr,
     setattr,
-    server_name="mcpify-comprehensive"
+    server_name="mcpify-calc"
 )
 
 async def main():

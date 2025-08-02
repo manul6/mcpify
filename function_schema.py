@@ -36,9 +36,19 @@ class FunctionSchema:
             if param.is_required:
                 required.append(param.name)
         
+        # check if this is an unbound method with self parameter
+        has_self_param = any(param.name == 'self' for param in self.parameters)
+        
+        # enhance description with usage instructions for unbound methods
+        enhanced_description = self.description
+        if has_self_param:
+            enhanced_description += "\n\n**USAGE**: this is an unbound method requiring a 'self' parameter. " \
+                                   "when calling this tool, you must pass arguments as a dict to avoid naming conflicts: " \
+                                   "tool({'self': instance_object, 'param': value}) instead of tool(self=instance, param=value)."
+        
         return Tool(
             name=self.name,
-            description=self.description,
+            description=enhanced_description,
             inputSchema={
                 "type": "object",
                 "properties": properties,
