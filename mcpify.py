@@ -1,6 +1,8 @@
 import asyncio
 import inspect
 import json
+import types
+import pkgutil
 from typing import Any, Dict, List
 
 from mcp.server import Server, NotificationOptions
@@ -29,21 +31,16 @@ class FunctionTool:
     def __init__(self, func: Any, schema: FunctionSchema):
         self._func = func
         self._schema = schema
-        # check if this function has problematic parameter names that conflict with method parameters
         self._has_self = any(param.name == 'self' for param in self._schema.parameters)
     
     async def __call__(self, *args, **kwargs) -> Any:
-        # handle arguments - either single dict or keyword arguments
         if len(args) == 1 and isinstance(args[0], dict) and not kwargs:
-            # called with single dict argument: tool({'self': obj, 'param': value})
             function_args = args[0]
         elif len(args) == 0 and kwargs:
-            # called with keyword arguments: tool(param=value)
             if self._has_self:
                 raise TypeError("function has 'self' parameter - must pass arguments as dict to avoid naming conflicts")
             function_args = kwargs
         elif len(args) == 0 and not kwargs:
-            # called with no arguments
             function_args = {}
         else:
             raise TypeError("pass either a single dict argument or keyword arguments, not both")
@@ -51,19 +48,13 @@ class FunctionTool:
         if self._schema.positional_parameters:
             positional_args = []
             remaining_kwargs = {}
-            
             for param in self._schema.parameters:
                 if param.is_positional and param.name in function_args:
                     positional_args.append(function_args[param.name])
                 elif not param.is_positional and param.name in function_args:
                     remaining_kwargs[param.name] = function_args[param.name]
-            
-            if remaining_kwargs:
-                return self._func(*positional_args, **remaining_kwargs)
-            else:
-                return self._func(*positional_args)
-        else:
-            return self._func(**function_args)
+            return self._func(*positional_args, **remaining_kwargs) if remaining_kwargs else self._func(*positional_args)
+        return self._func(**function_args)
 
 
 class ToolHolder:
@@ -71,6 +62,7 @@ class ToolHolder:
         self.name = name
         self.tools: Dict[str, FunctionTool] = {}
         self.schemas: Dict[str, FunctionSchema] = {}
+        self.callable_inspector = CallableInspector()
     
     def add_tool(self, name: str, func: Any, schema: FunctionSchema):
         if not name:
@@ -90,39 +82,32 @@ class ToolHolder:
         self.tools[name] = FunctionTool(func, schema)
         self.schemas[name] = schema
     
-    def __iadd__(self, other: "FunctionTool | ToolHolder"):
-        if isinstance(other, FunctionTool):
-            if not other._schema or not hasattr(other._schema, 'name'):
-                raise ToolError("functiontool must have a schema with name")
-            tool_name = other._schema.name
-            if not tool_name:
-                raise ToolError("tool name is required")
-            if tool_name in self.tools:
-                raise ToolError(f"tool '{tool_name}' already exists")
-            self.tools[tool_name] = other
-            self.schemas[tool_name] = other._schema
-        elif isinstance(other, ToolHolder):
-            for name, tool in other.tools.items():
-                if name in self.tools:
-                    raise ToolError(f"tool '{name}' already exists")
-                self.tools[name] = tool
-                self.schemas[name] = other.schemas[name]
-        else:
-            raise ToolError("expected functiontool or toolholder")
-        return self
-    
     def __ior__(self, other: "ToolHolder"):
         if not isinstance(other, ToolHolder):
-            raise ToolError("expected toolholder")
-        if self.name and other.name and self.name != other.name:
-            raise ToolError("holders must have same name")
+            raise ToolError("expected ToolHolder")
         
         for name, tool in other.tools.items():
             if name in self.tools:
-                raise ToolError(f"tool '{name}' already exists in target holder")
+                raise ToolError(f"tool '{name}' already exists")
             self.tools[name] = tool
             self.schemas[name] = other.schemas[name]
         
+        return self
+    
+    def __iadd__(self, other: "FunctionTool"):
+        if not isinstance(other, FunctionTool):
+            raise ToolError("expected FunctionTool")
+        if not other._schema or not hasattr(other._schema, 'name'):
+            raise ToolError("FunctionTool must have a schema with name")
+        
+        tool_name = other._schema.name
+        if not tool_name:
+            raise ToolError("tool name is required")
+        if tool_name in self.tools:
+            raise ToolError(f"tool '{tool_name}' already exists")
+        
+        self.tools[tool_name] = other
+        self.schemas[tool_name] = other._schema
         return self
 
 
@@ -130,7 +115,6 @@ class McpifiedServer:
     def __init__(self, name: str = "mcpify"):
         self.server = Server(name)
         self.tool_holder = ToolHolder(name)
-        self.callable_inspector = CallableInspector()
         self.value_serializer = ValueSerializer()
         
         @self.server.list_tools()
@@ -168,46 +152,38 @@ class McpifiedServer:
             except Exception as e:
                 return [TextContent(type="text", text=f"error: {e}")]
     
-    def add_function(self, func: Any, name: str = None) -> 'McpifiedServer':
-        function_name = name or getattr(func, '__name__', str(func))
-        schema = self.callable_inspector.inspect_callable(func)
-        # create a new schema with the correct name
-        from function_schema import FunctionSchema
-        schema = FunctionSchema(
-            name=function_name,
-            description=schema.description,
-            parameters=schema.parameters,
-            return_type=schema.return_type
-        )
-        self.tool_holder.add_tool(function_name, func, schema)
+    def __iadd__(self, other: "FunctionTool | ToolHolder"):
+        if isinstance(other, FunctionTool):
+            if not other._schema or not hasattr(other._schema, 'name'):
+                raise ToolError("functiontool must have a schema with name")
+            tool_name = other._schema.name
+            if not tool_name:
+                raise ToolError("tool name is required")
+            if tool_name in self.tool_holder.tools:
+                raise ToolError(f"tool '{tool_name}' already exists")
+            self.tool_holder.tools[tool_name] = other
+            self.tool_holder.schemas[tool_name] = other._schema
+        elif isinstance(other, ToolHolder):
+            for name, tool in other.tools.items():
+                if name in self.tool_holder.tools:
+                    raise ToolError(f"tool '{name}' already exists")
+                self.tool_holder.tools[name] = tool
+                self.tool_holder.schemas[name] = other.schemas[name]
+        else:
+            raise ToolError("expected functiontool or toolholder")
         return self
     
-    def _add_class_methods(self, cls: type) -> None:
-        """recursively add all methods from a class"""
-        for attr_name in dir(cls):
-            attr = getattr(cls, attr_name)
-            
-            # skip private methods and special methods
-            if attr_name.startswith('_'):
-                continue
-            
-            # skip if it's not a method or if it's a bound method
-            if not inspect.isfunction(attr):
-                continue
-            
-            # skip if it's already been added (avoid duplicates)
-            if attr_name in self.tool_holder.tools:
-                continue
-            
-            # add the method with class prefix to avoid naming conflicts
-            method_name = f"{cls.__name__}-{attr_name}"
-            
-            try:
-                # use add_function to get the name fix
-                self.add_function(attr, name=method_name)
-            except Exception as e:
-                # skip methods that can't be inspected
-                continue
+    def __ior__(self, other: "ToolHolder"):
+        if not isinstance(other, ToolHolder):
+            raise ToolError("expected toolholder")
+        
+        for name, tool in other.tools.items():
+            if name in self.tool_holder.tools:
+                raise ToolError(f"tool '{name}' already exists in target holder")
+            self.tool_holder.tools[name] = tool
+            self.tool_holder.schemas[name] = other.schemas[name]
+        
+        return self
     
     async def run(self):
         async with stdio_server() as (read_stream, write_stream):
@@ -225,17 +201,151 @@ class McpifiedServer:
             )
 
 
-def mcpify(*callables, server_name: str = "mcpify", recurse: bool = True) -> McpifiedServer:
+def mcpify(*objects, server_name: str = "mcpify", max_depth: int = 10, _current_depth: int = 0, _name_prefix: str = "") -> McpifiedServer:
+    if _current_depth >= max_depth:
+        return McpifiedServer(server_name)
+    
+    def _should_include_attribute(name: str, obj: Any) -> bool:
+        if name.startswith('_'):
+            return False
+        
+        if isinstance(obj, types.ModuleType):
+            skip_attrs = {'__builtins__', '__cached__', '__file__', '__loader__', 
+                         '__name__', '__package__', '__spec__', '__path__', '__doc__'}
+            if name in skip_attrs:
+                return False
+        
+        return callable(obj) or inspect.isclass(obj) or inspect.ismodule(obj)
+    
+    def _get_tool_name(base_name: str, prefix: str = "") -> str:
+        return f"{prefix}-{base_name}" if prefix else base_name
+    
+    def _add_module(module: types.ModuleType, name_prefix: str = "") -> ToolHolder:
+        module_name = getattr(module, '__name__', 'module').split('.')[-1]
+        current_prefix = _get_tool_name(module_name, name_prefix) if name_prefix else module_name
+        
+        tool_holder = ToolHolder(module_name)
+        
+        for attr_name in dir(module):
+            try:
+                attr_obj = getattr(module, attr_name)
+                if not _should_include_attribute(attr_name, attr_obj):
+                    continue
+                
+                if (hasattr(attr_obj, '__module__') and 
+                    attr_obj.__module__ and 
+                    attr_obj.__module__ != module.__name__):
+                    continue
+                
+                sub_server = mcpify(
+                    attr_obj, 
+                    server_name="", 
+                    max_depth=max_depth,
+                    _current_depth=_current_depth + 1,
+                    _name_prefix=current_prefix
+                )
+                tool_holder |= sub_server.tool_holder
+                
+            except (AttributeError, ImportError):
+                continue
+        
+        if hasattr(module, '__path__'):
+            try:
+                for importer, modname, ispkg in pkgutil.iter_modules(module.__path__, module.__name__ + "."):
+                    try:
+                        submodule = __import__(modname, fromlist=[''])
+                        sub_holder = _add_module(submodule, current_prefix)
+                        tool_holder |= sub_holder
+                    except (ImportError, AttributeError):
+                        continue
+            except (AttributeError, TypeError):
+                pass
+        
+        return tool_holder
+    
+    def _add_class(cls: type, name_prefix: str = "") -> ToolHolder:
+        class_name = cls.__name__
+        current_prefix = _get_tool_name(class_name, name_prefix) if name_prefix else class_name
+        
+        tool_holder = ToolHolder(class_name)
+        
+        
+        try:
+            constructor_name = _get_tool_name('new', current_prefix)
+            schema = tool_holder.callable_inspector.inspect_callable(cls)
+            schema = FunctionSchema(
+                name=constructor_name,
+                description=f"Create new instance of {class_name}",
+                parameters=schema.parameters,
+                return_type=schema.return_type
+            )
+            tool_holder.add_tool(constructor_name, cls, schema)
+        except Exception:
+            pass
+        
+        for attr_name in dir(cls):
+            if not _should_include_attribute(attr_name, cls):
+                continue
+            
+            try:
+                attr_obj = getattr(cls, attr_name)
+                
+                if callable(attr_obj) and attr_name != '__init__':
+                    method_name = _get_tool_name(attr_name, current_prefix)
+                    try:
+                        schema = tool_holder.callable_inspector.inspect_callable(attr_obj)
+                        schema = FunctionSchema(
+                            name=method_name,
+                            description=schema.description or f"{attr_name} method of {class_name}",
+                            parameters=schema.parameters,
+                            return_type=schema.return_type
+                        )
+                        tool_holder.add_tool(method_name, attr_obj, schema)
+                    except Exception:
+                        continue
+                elif inspect.isclass(attr_obj):
+                    sub_holder = _add_class(
+                        attr_obj, 
+                        current_prefix
+                    )
+                    tool_holder |= sub_holder
+                    
+            except (AttributeError, TypeError):
+                continue
+        
+        return tool_holder
+    
+    def _add_callable(callable_obj: Any, name_prefix: str = "") -> ToolHolder:
+        obj_name = getattr(callable_obj, '__name__', str(callable_obj))
+        tool_name = _get_tool_name(obj_name, name_prefix) if name_prefix else obj_name
+        
+        try:
+            tool_holder = ToolHolder(obj_name)
+            schema = tool_holder.callable_inspector.inspect_callable(callable_obj)
+            # Update schema name to include full path
+            schema = FunctionSchema(
+                name=tool_name,
+                description=schema.description,
+                parameters=schema.parameters,
+                return_type=schema.return_type
+            )
+            tool_holder.add_tool(tool_name, callable_obj, schema)
+            return tool_holder
+        except Exception:
+            return ToolHolder(obj_name)
+    
+    # Main processing logic
     server = McpifiedServer(server_name)
     
-    # first pass: add all callables
-    for callable_obj in callables:
-        server.add_function(callable_obj)
-    
-    # second pass: if recurse is enabled, add methods from classes
-    if recurse:
-        for callable_obj in callables:
-            if inspect.isclass(callable_obj):
-                server._add_class_methods(callable_obj)
+    for obj in objects:
+        try:
+            if inspect.ismodule(obj):
+                server |= _add_module(obj, _name_prefix)
+            elif inspect.isclass(obj):
+                server |= _add_class(obj, _name_prefix)
+            elif callable(obj):
+                server |= _add_callable(obj, _name_prefix)
+        except Exception:
+            continue
     
     return server
